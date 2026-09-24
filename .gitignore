@@ -1,0 +1,15 @@
+.idea/
+*.iml
+.vscode/
+out/
+build/
+.gradle/
+target/
+node_modules/
+.next/
+*.log
+.env
+.env.*
+!.env.example
+hs_err_pid*
+replay_pid*

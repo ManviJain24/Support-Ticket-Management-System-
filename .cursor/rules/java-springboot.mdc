@@ -1,0 +1,85 @@
+---
+description: Java 21 + Spring Boot 3 REST API conventions
+globs: ["**/*.java"]
+alwaysApply: false
+---
+
+# Java 21 + Spring Boot 3 REST API
+
+Target: Java 21, Spring Boot 3, Jakarta (`jakarta.*`, not `javax.*`). Prefer records for DTOs; constructor injection everywhere.
+
+## Package structure
+
+Root: `com.ticketing`. Group by technical layer, not by feature:
+
+```
+com.ticketing
+  config          # @Configuration, security, OpenAPI
+  controller      # REST adapters only
+  service         # use cases / domain logic
+  repository      # Spring Data JPA
+  domain          # JPA entities, enums, value objects
+  dto.request     # incoming API payloads
+  dto.response    # outgoing API payloads
+  exception       # AppException, ErrorCode, handlers
+  mapper          # entity <-> DTO (MapStruct or manual)
+```
+
+Do not put business logic, JPA entities, or persistence details in `controller`.
+
+## Layering
+
+- **Controller**: `@RestController` + `@RequestMapping`. Parse HTTP, call one service method, map result to a response DTO. No repositories, no transactions.
+- **Service**: `@Service` + `@Transactional` on the class or write methods. Own validation of domain rules. Never return entities to controllers — return DTOs or domain results the mapper converts.
+- **Repository**: Spring Data interfaces only. No business rules. Custom queries live in `repository` via `@Query` or fragments.
+- **DTO**: Request DTOs for input; response DTOs for output. Never expose entities on the wire. Never use entities as request bodies.
+
+```java
+// BAD: controller talks to repository / returns entity
+@GetMapping("/{id}")
+public Ticket get(@PathVariable UUID id) {
+  return ticketRepository.findById(id).orElseThrow();
+}
+
+// GOOD: controller -> service -> response DTO
+@GetMapping("/{id}")
+public TicketResponse get(@PathVariable UUID id) {
+  return ticketService.getById(id);
+}
+```
+
+## Exception handling
+
+- Throw a single `AppException` (or a small hierarchy under it) with an `ErrorCode` enum — never leak `RuntimeException`/`Exception` from services for expected failures.
+- Map persistence misses to `ErrorCode.NOT_FOUND`, conflicts to `CONFLICT`, rule violations to `UNPROCESSABLE` / `BAD_REQUEST`.
+- One `@RestControllerAdvice` maps `AppException` and `MethodArgumentNotValidException` to a stable error body: `code`, `message`, `details` (field errors). Do not put `@ExceptionHandler` on individual controllers.
+- Do not catch-and-ignore. Log at the advice for 5xx only.
+
+```java
+throw new AppException(ErrorCode.TICKET_NOT_FOUND, "Ticket " + id + " not found");
+```
+
+## Lombok
+
+- Entities: `@Getter @Setter` (or `@Data` only if equals/hashCode is carefully excluding lazy relations). Prefer `@Builder` + `@NoArgsConstructor` + `@AllArgsConstructor` for JPA.
+- Services/controllers: **no** `@RequiredArgsConstructor` if a single constructor is enough — use an explicit constructor, or Lombok `@RequiredArgsConstructor` on `final` fields. Never mix field `@Autowired` with Lombok.
+- Do not use `@SneakyThrows`. Do not use `@Data` on JPA entities (lazy-load `equals`/`hashCode`/`toString` bugs).
+- DTOs: prefer Java records; if a mutable class is required, `@Value` or `@Builder`.
+
+## Naming
+
+| Kind | Pattern | Example |
+|---|---|---|
+| Controller | `{Resource}Controller` | `TicketController` |
+| Service | `{Resource}Service` | `TicketService` |
+| Repository | `{Entity}Repository` | `TicketRepository` |
+| Entity | singular noun | `Ticket` |
+| Request DTO | `{Action}{Resource}Request` | `CreateTicketRequest` |
+| Response DTO | `{Resource}Response` | `TicketResponse` |
+| Exception advice | `GlobalExceptionHandler` | |
+| Packages | lowercase, no camelCase | `dto.request` |
+
+- REST paths: plural nouns, kebab-case only if multi-word: `/api/v1/tickets`, `/api/v1/tickets/{id}`.
+- Methods: `getById`, `create`, `update`, `delete`, `list` — not `getTicketById` when the type is already `TicketService`.
+- Booleans: `is`/`has` prefix (`isOpen`, `hasAssignee`).
+- Constants: `UPPER_SNAKE`. Enums: `TICKET_STATUS` type `TicketStatus` with values `OPEN`, `IN_PROGRESS`.

@@ -1,0 +1,81 @@
+---
+description: REST API conventions — naming, status codes, errors, pagination
+globs: ["**/*.{java,yml,yaml,json}"]
+alwaysApply: false
+---
+
+# REST API standards
+
+JSON over HTTP. Base path `/api/v1`. UTF-8. Resource IDs are UUIDs. Align payloads with `spec/api-contract.md`.
+
+## Resource naming
+
+- Plural nouns, lowercase. Multi-word path segments: kebab-case (`/api/v1/ticket-comments` only if it is its own resource).
+- Nest only when the child cannot exist without the parent: `/api/v1/tickets/{ticketId}/comments`.
+- No verbs in paths. Actions that are state changes are `POST` to a sub-resource: `POST /api/v1/tickets/{id}/assign`, not `/changeStatus`.
+- Query params for filters/sort: `status`, `assigneeId`, `sort` (`field,asc|desc`). No camelCase in query keys — use camelCase in JSON bodies only.
+
+| Method | Path | Meaning |
+|---|---|---|
+| `GET` | `/api/v1/tickets` | List (paginated) |
+| `GET` | `/api/v1/tickets/{id}` | Fetch one |
+| `POST` | `/api/v1/tickets` | Create |
+| `PATCH` | `/api/v1/tickets/{id}` | Partial update of mutable fields |
+| `DELETE` | `/api/v1/tickets/{id}` | Delete (or 405 if tickets are not deleted) |
+| `POST` | `/api/v1/tickets/{id}/...` | Lifecycle action (`assign`, `resolve`, `close`) |
+
+Prefer `PATCH` over `PUT`. Do not use `GET` for mutations.
+
+## HTTP status codes
+
+| Status | When |
+|---|---|
+| `200 OK` | Successful `GET` / `PATCH` / action that returns a body |
+| `201 Created` | Successful `POST` create. Set `Location: /api/v1/tickets/{id}` |
+| `204 No Content` | Successful `DELETE` with no body |
+| `400 Bad Request` | Malformed JSON, wrong types, missing required JSON fields (bean validation) |
+| `401 Unauthorized` | Missing/invalid credentials |
+| `403 Forbidden` | Authenticated but not allowed |
+| `404 Not Found` | Resource id does not exist |
+| `409 Conflict` | Duplicate create, stale version, concurrent update |
+| `422 Unprocessable Entity` | Syntactically valid body that violates domain/state-machine rules |
+| `500 Internal Server Error` | Unexpected failures only — never as a stand-in for 4xx |
+
+Do not return `200` with an error payload. Illegal ticket transitions are **`422`**, not `400` or `500`.
+
+## Error body
+
+Every 4xx/5xx uses the same shape from `GlobalExceptionHandler`. No Spring default `/error` HTML or `timestamp`/`path`-only bodies.
+
+```json
+{
+  "code": "TICKET_NOT_FOUND",
+  "message": "Ticket 3fa85f64-5717-4562-b3fc-2c963f66afa6 not found",
+  "details": [
+    { "field": "status", "message": "must not be blank" }
+  ]
+}
+```
+
+- `code`: `ErrorCode` enum name (`SCREAMING_SNAKE`). Stable for clients; do not reuse codes for different meanings.
+- `message`: human-readable, no stack traces, no SQL.
+- `details`: optional array; empty or omitted when there are no field errors. Bean validation maps each constraint to `{ field, message }`.
+- Do not wrap successes in `{ "data": ..., "success": true }`. Success body **is** the resource DTO.
+
+## Pagination
+
+List endpoints are paginated. Never return an unbounded array.
+
+Query: `page` (0-based, default `0`), `size` (default `20`, max `100`), `sort` (optional).
+
+```json
+{
+  "content": [ { } ],
+  "page": 0,
+  "size": 20,
+  "totalElements": 134,
+  "totalPages": 7
+}
+```
+
+Map from Spring `Page<T>`. Reject `size > 100` with `400`. Empty lists are `200` with `content: []`, not `404`.

@@ -1,0 +1,68 @@
+---
+description: JUnit 5 + Mockito unit tests and Testcontainers integration tests
+globs: ["**/*Test.java"]
+alwaysApply: false
+---
+
+# Testing (JUnit 5, Mockito, Testcontainers)
+
+Stack: JUnit 5 (`org.junit.jupiter`), Mockito (with `mockito-junit-jupiter`), AssertJ. Integration tests use **PostgreSQL**, never H2. Prefer Testcontainers (`PostgreSQLContainer` + `postgres:16-alpine`) when Docker is usable. If the Docker daemon is not reachable, use the dedicated local database `ticketing_test` via `PostgresIntegrationTest`. Do not point integration tests at the app database `ticketing`.
+
+## Layout and naming
+
+- Test class: `{ClassUnderTest}Test` under `src/test/java`, mirroring production packages.
+- Method names: `should{Expected}_when{Condition}` (e.g. `shouldMoveToInProgress_whenOpenTicketIsAssigned`).
+- Unit tests: no Spring context. `@ExtendWith(MockitoExtension.class)`, `@Mock` collaborators, `@InjectMocks` on the service.
+- Integration tests: same `*Test` suffix, annotate with `@Tag("integration")` plus `@SpringBootTest` / `@DataJpaTest` / `@WebMvcTest`. Do not introduce `*IT.java`.
+- Prefer `@WebMvcTest` for controllers (MockMvc + mocked services). Full `@SpringBootTest` only when the HTTP + persistence path must run together.
+
+```java
+@ExtendWith(MockitoExtension.class)
+class TicketServiceTest {
+  @Mock TicketRepository ticketRepository;
+  @InjectMocks TicketService ticketService;
+}
+```
+
+## Unit vs integration
+
+- **Unit**: service and domain rules. Stub repositories; never hit a database. Verify interactions with `verify()` only when the side effect is the behavior (e.g. save called once).
+- **Integration**: repository queries, Flyway/Liquibase, REST error bodies, and state changes that persist. Share one Postgres per test class (`PostgresIntegrationTest`: Testcontainers when Docker works, otherwise `ticketing_test`).
+- Do not `@SpringBootTest` a class that only checks if/else in a service.
+- Do not mock the class under test. Do not use `@MockBean` in unit tests.
+
+## State machine coverage (required)
+
+Ticket status transitions are a **must-cover** area — treat gaps as test failures, not follow-ups.
+
+For every status in `TicketStatus`, add tests for:
+
+1. **Legal transitions** — given current status + valid action, result status and persisted fields match the spec (`spec/state-machine.md`).
+2. **Illegal transitions** — given current status + invalid action, throw `AppException` with the expected `ErrorCode`; repository `save` is **not** called.
+3. **Terminal states** — no outbound transitions (e.g. closed/cancelled stay put).
+4. **Guards** — assignee required, comment required, only owner/agent, etc.
+
+Cover this in **unit tests on the service** first (table-driven with `@ParameterizedTest` + `@EnumSource` / `@CsvSource`). Add at least one integration test per happy-path transition that round-trips through the API or repository so the write is actually committed.
+
+```java
+@ParameterizedTest
+@CsvSource({
+    "OPEN, ASSIGN, IN_PROGRESS",
+    "IN_PROGRESS, RESOLVE, RESOLVED"
+})
+void shouldTransition_whenActionIsLegal(TicketStatus from, TicketAction action, TicketStatus to) { ... }
+
+@ParameterizedTest
+@CsvSource({ "RESOLVED, ASSIGN", "CLOSED, RESOLVE" })
+void shouldReject_whenActionIsIllegal(TicketStatus from, TicketAction action) { ... }
+```
+
+If `spec/state-machine.md` lists a transition and there is no matching test, add the test before changing production code.
+
+## Conventions
+
+- One logical behavior per test. No shared mutable state between methods; use `@BeforeEach` only for common stubs/fixtures.
+- Use AssertJ (`assertThat`, `assertThatThrownBy`). Do not use `assertEquals` / expected-exception annotations.
+- `@DisplayName` optional; method names must stand alone.
+- Do not test Lombok getters, framework wiring, or trivial mappers unless they encode rules.
+- Keep tests deterministic: fixed clocks (`Clock` injected), no `Thread.sleep`, no real network outside Testcontainers.
