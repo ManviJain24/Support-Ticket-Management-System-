@@ -138,6 +138,3 @@ frontend/       Next.js UI
 .env.example    Env var names (no real passwords)
 ```
 
-## License
-
-Private project unless you add a license file.
